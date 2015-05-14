@@ -202,8 +202,8 @@ WP_Experience_API::register( 'give_comments', array(
 		$statement = array(
 				'user' => get_current_user_id(),
 				'verb' => array(
-					'id' => 'http://activitystrea.ms/schema/1.0/create',
-					'display' => array( 'en-US' => 'created' )
+					'id' => 'http://adlnet.gov/expapi/verbs/commented',
+					'display' => array( 'en-US' => 'commented' )
 				),
 				'object' => array(
 					'id' => get_comment_link( $comment_id ),
@@ -553,5 +553,4 @@ ExperienceAPI::register('test_attachment', array(
 	}
 ));
 */
-
 
