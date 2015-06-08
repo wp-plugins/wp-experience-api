@@ -63,7 +63,7 @@ You can create your own plugin and use the plugin's hooks!
 The settings are defaulted so that nothing is sent by default.  Please go to the dashboard and the WP xAPI settings page to configure what statements are sent.
 
 == Upgrade Notice ==
-Nothing yet
+Nothing yet.
 
 == Screenshots ==
 
