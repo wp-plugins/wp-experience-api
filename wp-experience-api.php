@@ -14,11 +14,8 @@
 /* Helpful documentation at
  * http://tincanapi.com/tech-overview/
  * NOTE:
- * - to make work:
- * - - need to set correct username and pasword for LRS in wp-experience-api-config.php
- * - - should also add a slug and hooks in trigers.php to make it trigger on whatever action.  add hooks there.
  * - can run without network activation on a per site basis as well as network wide. will give warning if network activated but no saved network options
- * - to make work in MU folder, just copy the plugin directory to the wp-content/mu-plugins folder, then copy wp-experience-api-mu-loader.php to the outside of hte folder directly under the mu-plugins folder.
+ * - need to double check later the class's method/property visiblity for better security... just in case!
  */
 //basic configuration constants used throughout the plugin
 use TinCan\Activity;
@@ -29,6 +26,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 require_once( 'wp-experience-api-configs.php' );
 require_once( 'includes/TinCanPHP/autoload.php' );
+require_once( 'wp-experience-api-queue-obj.php' );
 
 class WP_Experience_API {
 
@@ -42,6 +40,44 @@ class WP_Experience_API {
 		'JSON_API' => 'http://wordpress.org/plugins/json-api/',
 		'BadgeOS_Open_Badges_Issuer_AddOn' => 'https://github.com/ubc/open-badges-issuer-addon',
 	);
+	//constants for managing creation of LRSes, cause we can't store password/username in DB.
+	const WPXAPI_NETWORK_LRS = 1;
+	const WPXAPI_SITE_LRS = 2;
+
+	/**
+	 * creates TinCan\RemoteLRS instance based which one wanted
+	 *
+	 * @param Integer $lrs
+	 * @return Mixed <boolean, \TinCan\RemoteLRS>
+	 */
+	private static function setup_lrs( $lrs ) {
+		$return_lrs = false;
+
+		//let's make sure we have options setup
+		self::setup_options();
+
+		//let's do it!
+		switch ( $lrs ) {
+			case WP_Experience_API::WPXAPI_NETWORK_LRS:
+				$return_lrs = new TinCan\RemoteLRS(
+					self::$site_options['wpxapi_network_lrs_url'],
+					WP_XAPI_DEFAULT_XAPI_VERSION,
+					self::$site_options['wpxapi_network_lrs_username'],
+					self::$site_options['wpxapi_network_lrs_password']
+				);
+				break;
+			case WP_Experience_API::WPXAPI_SITE_LRS:
+				$return_lrs = new TinCan\RemoteLRS(
+					self::$options['wpxapi_lrs_url'],
+					WP_XAPI_DEFAULT_XAPI_VERSION,
+					self::$options['wpxapi_lrs_username'],
+					self::$options['wpxapi_lrs_password']
+				);
+				break;
+		}
+
+		return $return_lrs;
+	}
 
 	/**
 	 * Initialization function
@@ -49,9 +85,8 @@ class WP_Experience_API {
 	 * @return void
 	 */
 	public static function init() {
-
 		// need to check for php version!  min 5.4
-		if ( ! self::check_php_version() ) {
+		if ( ! WP_Experience_API::check_php_version() ) {
 			deactivate_plugins( plugin_basename( __FILE__ ) );
 			add_action( 'admin_notices', array( 'WP_Experience_API', 'php_disable_notice' ) );
 			if ( isset( $_GET['activate'] ) ) {
@@ -59,22 +94,17 @@ class WP_Experience_API {
 			}
 		}
 
+		//get options
+		self::setup_options();
+
+		//create LRS
 		if ( is_multisite() && ! function_exists( 'is_plugin_active_for_network' ) ) {
 			require_once( ABSPATH . '/wp-admin/includes/plugin.php' );
 		}
-
-		//get options
-		WP_Experience_API::$options = get_option( 'wpxapi_settings' );
-		self::$site_options = get_site_option( 'wpxapi_network_settings' );
 		if ( ( is_multisite() && is_plugin_active_for_network( 'wp-experience-api/wp-experience-api.php' ) ) || defined( 'WP_XAPI_MU_MODE' ) ) {
-			if ( ! empty( self::$site_options ) || ! empty( self::$site_options['wpxapi_network_lrs_password'] ) && ! empty( self::$site_options['wpxapi_network_lrs_username'] ) && ! empty( self::$site_options['wpxapi_network_lrs_url'] ) ) {
+			if ( ! empty( WP_Experience_API::$site_options ) || ! empty( WP_Experience_API::$site_options['wpxapi_network_lrs_password'] ) && ! empty( WP_Experience_API::$site_options['wpxapi_network_lrs_username'] ) && ! empty( WP_Experience_API::$site_options['wpxapi_network_lrs_url'] ) ) {
 
-				self::$lrs1 = new TinCan\RemoteLRS(
-					self::$site_options['wpxapi_network_lrs_url'],
-					WP_XAPI_DEFAULT_XAPI_VERSION,
-					self::$site_options['wpxapi_network_lrs_username'],
-					self::$site_options['wpxapi_network_lrs_password']
-				);
+				self::$lrs1 = self::setup_lrs( WP_Experience_API::WPXAPI_NETWORK_LRS );
 			} else {
 				add_action( 'admin_notices', array( 'WP_Experience_API', 'config_unset_notice' ) );
 				error_log( 'Please tell Network Administrator to set the default username/password/URL of the LRS (for plugin: WP ExperienceA API)' );
@@ -89,7 +119,7 @@ class WP_Experience_API {
 			}
 		}
 
-		if ( 'Yes' === self::$site_options['wpxapi_network_lrs_stop_all'] ) {
+		if ( 'Yes' === WP_Experience_API::$site_options['wpxapi_network_lrs_stop_all'] ) {
 			add_action( 'admin_notices', array( 'WP_Experience_API', 'stop_all_statements_notice' ) );
 			error_log( 'The Network Administrator chose to stop allowing statements to be sent to the Network level LRS.' );
 		}
@@ -108,6 +138,43 @@ class WP_Experience_API {
 	}
 
 	/**
+	 * does basic activation stuff such as... create table!
+	 *
+	 * @props http://shibashake.com/wordpress-theme/write-a-plugin-for-wordpress-multi-site
+	 * @return void
+	 */
+	public static function wpxapi_on_activate() {
+		global $wpdb;
+
+		//use base_prefix so it will be on global regardless of mu or single site
+		$table_name = WP_Experience_Queue_Object::get_queue_table_name();
+		if ( $wpdb->get_var( "SHOW TABLES LIKE '{$table_name}'" ) != $table_name ) {
+			if ( ! empty( $wpdb->charset ) ) {
+				$charset_collate = "DEFAULT CHARACTER SET {$wpdb->charset}";
+			}
+			if ( ! empty( $wpdb->collate ) ) {
+				$charset_collate .= " COLLATE {$wpdb->collate}";
+			}
+			$sql = "CREATE TABLE IF NOT EXISTS {$table_name} (
+				id bigint NOT NULL AUTO_INCREMENT,
+				tries tinyint UNSIGNED NOT NULL DEFAULT '1',
+				last_try_time datetime,
+				statement text NOT NULL,
+				lrs_info tinyint NOT NULL,
+				created timestamp DEFAULT CURRENT_TIMESTAMP,
+				PRIMARY KEY (id)
+			) {$charset_collate};";
+
+			require_once( ABSPATH . 'wp-admin/includes/upgrade.php' );
+			dbDelta( $sql );
+		}
+
+		//deal with creating a cron function that sends stuff from the queue
+		wp_schedule_event( time(), WP_XAPI_QUEUE_RECURRANCE, 'wpxapi_run_queue' );
+		add_action( 'wpxapi_run_queue', array( __CLASS__, 'wpxapi_run_queue' ) );
+	}
+
+	/**
 	 * Converts the triggers created by the trigger.php and starts sending the statements to the LRS
 	 *
 	 * @return void
@@ -115,7 +182,7 @@ class WP_Experience_API {
 	public static function load() {
 		$register_locked = true;
 
-		foreach ( self::$triggers as $slug => $trigger ) {
+		foreach ( WP_Experience_API::$triggers as $slug => $trigger ) {
 			foreach ( $trigger['hooks'] as $hook ) {
 				$args = 1;
 				$priority = 10;
@@ -145,8 +212,8 @@ class WP_Experience_API {
 	 * @return void
 	 */
 	public static function register( $slug, $data ) {
-		if ( ! self::$register_locked ) {
-			self::$triggers[ $slug ] = $data;
+		if ( ! WP_Experience_API::$register_locked ) {
+			WP_Experience_API::$triggers[ $slug ] = $data;
 		}
 	}
 
@@ -158,8 +225,8 @@ class WP_Experience_API {
 	 * @return void
 	 */
 	public static function deregister( $slug, $data ) {
-		if ( ! self::$register_locked ) {
-			unset( self::$triggers[ $slug ] );
+		if ( ! WP_Experience_API::$register_locked ) {
+			unset( WP_Experience_API::$triggers[ $slug ] );
 		}
 	}
 
@@ -171,7 +238,7 @@ class WP_Experience_API {
 	 * @return mixed  false on failure, void otherwise
 	 */
 	public static function send( $trigger, $args ) {
-		if ( 'Yes' === self::$site_options['wpxapi_network_lrs_stop_all'] ) {
+		if ( 'Yes' === WP_Experience_API::$site_options['wpxapi_network_lrs_stop_all'] ) {
 			error_log( 'The Network Administrator chose to stop allowing statements to be sent to the Network level LRS.' );
 			return;
 		}
@@ -192,6 +259,7 @@ class WP_Experience_API {
 		$context = WP_Experience_API::create_context( $data );
 		$result = WP_Experience_API::create_result( $data );
 		$attachments = WP_Experience_API::create_attachments( $data );
+		$timestamp = WP_Experience_API::create_timestamp( $data );
 
 		//sanity check as actor/verb/object is required.  the rest os recommended.
 		if ( empty( $actor ) || empty( $verb ) || empty( $object ) ) {
@@ -215,7 +283,11 @@ class WP_Experience_API {
 			$statement['attachments'] = $attachments;
 		}
 
-		self::post( new TinCan\Statement( apply_filters( 'wpxapi_statement', $statement ) ) );
+		if ( ! empty( $timestamp ) ) {
+			$statement['timestamp'] = $timestamp;
+		}
+
+		WP_Experience_API::post( new TinCan\Statement( apply_filters( 'wpxapi_statement', $statement ) ) );
 	}
 
 	/**
@@ -230,19 +302,24 @@ class WP_Experience_API {
 		}
 
 		if ( ( is_multisite() && is_plugin_active_for_network( 'wp-experience-api/wp-experience-api.php' ) ) || defined( 'WP_XAPI_MU_MODE' ) ) {
-			if ( ! empty( self::$lrs1 ) && 'No' === self::$site_options['wpxapi_network_lrs_stop_network_level_only'] ) {
-				$response = self::$lrs1->saveStatement( $data );
+			if ( ! empty( WP_Experience_API::$lrs1 ) && 'No' === WP_Experience_API::$site_options['wpxapi_network_lrs_stop_network_level_only'] ) {
+				$response = WP_Experience_API::$lrs1->saveStatement( $data );
+
+				if ( false === (bool) $response->success ) {
+					//since it fails, we add to queue!
+					WP_Experience_API::wpxapi_queue_enqueue( $data, WP_Experience_API::WPXAPI_NETWORK_LRS );
+				}
 			}
 		}
 
 		if ( ! empty( WP_Experience_API::$options['wpxapi_lrs_url'] ) && ! empty( WP_Experience_API::$options['wpxapi_lrs_username'] ) && ! empty( WP_Experience_API::$options['wpxapi_lrs_password'] ) ) {
-			$lrs2 = new TinCan\RemoteLRS(
-				WP_Experience_API::$options['wpxapi_lrs_url'],
-				WP_XAPI_DEFAULT_XAPI_VERSION,
-				WP_Experience_API::$options['wpxapi_lrs_username'],
-				WP_Experience_API::$options['wpxapi_lrs_password']
-			);
+			$lrs2 = self::setup_lrs( WP_Experience_API::WPXAPI_SITE_LRS );
 			$response2 = $lrs2->saveStatement( $data );
+
+			if ( false === (bool) $response2->success ) {
+				//failed, so enqueue!
+				WP_Experience_API::wpxapi_queue_enqueue( $data, WP_Experience_API::WPXAPI_SITE_LRS );
+			}
 		}
 
 		return;
@@ -267,7 +344,7 @@ class WP_Experience_API {
 
 			if ( false !== $user_data ) {
 				//now we pull the account/email option!
-				if ( ! empty( self::$site_options['wpxapi_network_lrs_user_setting'] ) && 2 == self::$site_options['wpxapi_network_lrs_user_setting'] ) {
+				if ( ! empty( WP_Experience_API::$site_options['wpxapi_network_lrs_user_setting'] ) && 2 == WP_Experience_API::$site_options['wpxapi_network_lrs_user_setting'] ) {
 					//if email
 					$actor = new TinCan\Agent(
 						[
@@ -281,6 +358,8 @@ class WP_Experience_API {
 					$unique_id = apply_filters( 'wpxapi_actor_account_name', get_user_meta( $user_data->ID, WP_XAPI_DEFAULT_ACTOR_ACCOUNT_NAME, true ) );
 
 					if ( empty( $unique_id ) ) {
+						//we give this error message BECAUSE I was caught debugging this > 3 times!
+						error_log( 'Please ensure that the constants in wp-experience-api-configs.php file is set properly!' );
 						return;
 					}
 
@@ -380,6 +459,13 @@ class WP_Experience_API {
 		return apply_filters( 'wpxapi_context', $context, $data );
 	}
 
+	public static function create_timestamp( $data ) {
+		$timestamp = null;
+		if ( isset( $data['timestamp_raw'] ) ) {
+			$timestamp = $data['timestamp_raw'];
+		}
+		return apply_filters( 'wpxapi_timestamp', $timestamp, $data );
+	}
 	/**
 	 * creates result
 	 *
@@ -435,7 +521,7 @@ class WP_Experience_API {
 	 */
 	public static function meets_badgeos_dependencies() {
 		$return = true;
-		foreach ( self::$dependencies as $class => $url ) {
+		foreach ( WP_Experience_API::$dependencies as $class => $url ) {
 			if ( ! class_exists( $class ) ) {
 				$return = false;
 				break;
@@ -453,7 +539,7 @@ class WP_Experience_API {
 	 * NOTE: not currently used as it will force users to have other plugins installed.
 	 */
 	public static function meets_requirements() {
-		$return = self::meets_badgeOS_dependencies();
+		$return = WP_Experience_API::meets_badgeOS_dependencies();
 
 		//we only want to show this in admin panels and only for folks that can do something about it, aka admins and above
 		if ( false === $return && is_admin() && current_user_can( 'activate_plugins' ) ) {
@@ -485,7 +571,7 @@ class WP_Experience_API {
 	 */
 	public static function dependencies_disable_notice() {
 		echo "<div class='error'>";
-		foreach ( self::$dependencies as $class => $url ) {
+		foreach ( WP_Experience_API::$dependencies as $class => $url ) {
 			if ( ! class_exists( $class ) ) {
 				$dependency = sprintf( '<a href="%s">%s</a>', esc_url( $url ), esc_html( $class ) );
 				?>
@@ -554,6 +640,187 @@ class WP_Experience_API {
 		}
 		return $page_url;
 	}
+
+	/**
+	 * singleton wrapper for getting options
+	 *
+	 * @param $site boolean if true, then get site option.  If false, then get network options.
+	 */
+	public static function wpxapi_get_class_option( $network = true ) {
+		if ( true === $network ) {
+			//get network level options
+			if ( null === WP_Experience_API::$site_options ) {
+				static::$site_options = get_site_option( 'wpxapi_network_settings' );
+			}
+			return WP_Experience_API::$site_options;
+		} else {
+			// get site level options
+			if ( null === WP_Experience_API::$options ) {
+				static::$options = self::wpxapi_get_blog_option( 'wpxapi_settings' );
+			}
+
+			return WP_Experience_API::$options;
+		}
+	}
+
+	/**
+	 * Basically a wrapper for a wrapper so that getting options work for both
+	 * multisite and stand alone sites
+	 *
+	 * @param $option_name String name of option wanted at single blog level
+	 *
+	 */
+	private static function wpxapi_get_blog_option( $option_name ) {
+		if ( function_exists( 'get_blog_option' ) ) {
+			return get_blog_option( null, $option_name );
+		} else {
+			return get_option( $option_name );
+		}
+	}
+
+	/**
+	 * setup options for the class
+	 */
+	private static function setup_options() {
+		self::$options = WP_Experience_API::wpxapi_get_class_option( false );
+		self::$site_options = WP_Experience_API::wpxapi_get_class_option( true );
+	}
+
+	/**
+	 * Pulls from the queue and sends tries to resend xAPI statements
+	 *
+	 * NOTES:
+	 * - it goes through the entire queue
+	 * - checks if past max tries
+	 * - checks if past next retry time (based on last try time and # of attempts)
+	 * - tries sending, if fails, adds back to queue
+	 *
+	 * @return boolean
+	 */
+	public static function wpxapi_run_queue() {
+		if ( WP_Experience_API::wpxapi_queue_is_not_empty() ) {
+			$past_retry_time_limit = false;
+			$count = WP_Experience_API::wpxapi_queue_is_not_empty( true );
+			$i = 0; //counter
+
+			//sanity check JUST to make sure it can/will end the loop
+			if ( 0 >= $count ) {
+				return;
+			}
+
+			while ( $i < $count && ! $past_retry_time_limit ) {
+				$i++;
+
+				//get queue object
+				$queue_obj = WP_Experience_API::wpxapi_queue_dequeue();
+
+				//sanity check that queue_obj is NOT empty
+				if ( empty( $queue_obj ) ) {
+					return false;
+				}
+
+				//if past max tries, then throw error message into log.
+				if ( $queue_obj->tries > WP_XAPI_MAX_SENDING_TRIES ) {
+					error_log('Max number of tries exceeded for the following statement: '.print_r( $queue_obj->statement, true ) );
+					return false;
+				}
+
+				//check retry time to make sure it's good still.
+				$last_try_time = intval( strtotime( $queue_obj->last_try_time ) );
+				$next_retry_time = $last_try_time + pow( 2, intval( $queue_obj->tries ) );
+				if ( time() < $next_retry_time ) {
+					//not time to try yet, so skip trying.  next time cron runs, it should check this again.
+					continue;
+				}
+
+				//try sending the statement!
+				$lrs = self::setup_lrs( $queue_obj->lrs_info );
+				$response = $lrs->saveStatement( $queue_obj->statement );
+				if ( false === (bool) $response->success ) {
+					//failed, so enqueue!
+					WP_Experience_API::wpxapi_queue_enqueue( $queue_obj, $lrs_info );
+				}
+			}
+		}
+	}
+
+	/**
+	 * checks if global statement queue is empty or not
+	 *
+	 * @param boolean if true, then returns number, else returns boolean
+	 * @return mixed if $count == true, return count, else return boolean
+	 */
+	public static function wpxapi_queue_is_not_empty( $count = false ) {
+		global $wpdb;
+		$return_value = null;
+		$table_name = WP_Experience_Queue_Object::get_queue_table_name();
+
+		$sql = "SELECT COUNT(*) FROM $table_name";
+		$return_value = $wpdb->get_var( $sql );
+
+		if ( ! $count ) {
+			$return_value = (bool) $return_value;
+		}
+
+		return $return_value;
+	}
+
+	/**
+	 * adds statement to queue
+	 *
+	 * This is triggered when statement fails to send
+	 *
+	 * @param mixed $statement either TinCan\Statement or WP_Experience_Queue_Object
+	 * @param Array $lrs_info eg. array('endpoing' => 'xx', 'version' => 'yy', 'username' => 'zz', 'password')
+	 * @return Boolean true if it worked, false otherwise
+	 */
+	public static function wpxapi_queue_enqueue( $statement, $lrs_info ) {
+		$queue = null;
+		$table_name = WP_Experience_Queue_Object::get_queue_table_name();
+
+		//create queue instance based on what's passed in
+		if ( $statement instanceof TinCan\Statement ) {
+			//sanity check, for in this case, we need both parameters NOT empty!
+			if ( empty( $lrs_info ) ) {
+				return false;
+			}
+			$queue = WP_Experience_Queue_Object::with_statement_lrs_info( $statement, $lrs_info );
+		} else if ( $statement instanceof WP_Experience_Queue_Object ){
+			 $statement->tried_sending_again();
+			 $queue = $statement;
+		}
+
+		//save queue!
+		return (bool) $queue->save_row();
+	}
+
+	/**
+	 * removes item from queue
+	 *
+	 * @return TinCan\Statement
+	 */
+	public static function wpxapi_queue_dequeue() {
+		$queue_obj = WP_Experience_Queue_Object::get_row();
+
+		return $queue_obj;
+	}
 }
 
 WP_Experience_API::init();
+
+//OK, so depending on single installation or multisite install, we do different
+
+//single stand alone site install... register_activation_hook should work.
+//the "queue" is global, so after the first activation where table is created,
+//it is just checked to see the table is there on activation again.
+register_activation_hook( __FILE__, array( 'WP_Experience_API', 'wpxapi_on_activate' ) );
+
+//this is for special case of plugin working with mu_plugins folder
+//@props https://wordpress.org/support/topic/register_activation_hook-on-multisite
+if ( is_multisite() ) {
+	//check if in mu_plugins folder.  We go up 2 directories because we assume
+	//user installed it properly following instructions!
+	if ( WPMU_PLUGIN_DIR == dirname( dirname( __FILE__ ) ) ) {
+		WP_Experience_API::wpxapi_on_activate();
+	}
+}
