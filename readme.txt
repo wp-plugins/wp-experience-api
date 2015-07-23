@@ -73,6 +73,9 @@ Nothing yet.
 
 == Changelog ==
 
+= 1.0.4 =
+* added a queueing system.  Also setting timestamp field is done by the plugin.
+
 = 1.0.3 =
 * added additional options for whitelisted users access level.  Options are whitelisted users have full control or only control LRS info at the site level.
 
