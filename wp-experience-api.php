@@ -135,6 +135,10 @@ class WP_Experience_API {
 
 		add_action( 'init', array( __CLASS__, 'load' ) );
 
+		//needs to check if queue is empty or not and display admin notices as appropriate
+		add_action( 'admin_notices', array( __CLASS__, 'wpxapi_queue_is_not_emtpy_notice' ) );
+		add_action( 'network_admin_notices', array( __CLASS__, 'wpxapi_queue_is_not_emtpy_notice' ) );
+
 	}
 
 	/**
@@ -169,9 +173,32 @@ class WP_Experience_API {
 			dbDelta( $sql );
 		}
 
-		//deal with creating a cron function that sends stuff from the queue
-		wp_schedule_event( time(), WP_XAPI_QUEUE_RECURRANCE, 'wpxapi_run_queue' );
-		add_action( 'wpxapi_run_queue', array( __CLASS__, 'wpxapi_run_queue' ) );
+		/**
+		 * DEPRECATED!!!!  Now we use a button to run the queue!  much more control...  we also added admin notices when queue is not empty.
+		 *
+		 * We need to create a wp_cron, but we only want it to run from one spot.
+		 */
+		/*
+		if ( is_main_site() ) {
+			if ( false === wp_get_schedule( 'wpxapi_run_the_queue' ) ) {
+				//we check first BEFORE we schedule. otherwise, we get multiple copies!we
+				$delay = 1 * 60 * 60;	//number of seconds before we initially run the cron
+				wp_schedule_event( time() + $delay, WP_XAPI_QUEUE_RECURRANCE, 'wpxapi_run_the_queue' );
+			}
+			//we check if main site first so that ONLY the main site will be able to do the run queue thing
+			add_action( 'wpxapi_run_the_queue', array( __CLASS__, 'wpxapi_run_the_queue' ) );
+		}
+		*/
+		
+		/**
+		 * We need to remove legacy wp_cron 'wpxapi_run_queue'.
+		 * 
+		 * Issue was that in 1.0.4, the plugin scheduled EVERY VISIT on EVERY SITE instead of
+		 * simulating cron where it is run only on one site and checked whether it's set or not (see above!)
+		 */
+		if ( false !== wp_get_schedule( 'wpxapi_run_queue' ) ) {
+			wp_clear_scheduled_hook( 'wpxapi_run_queue' );
+		}
 	}
 
 	/**
@@ -459,6 +486,12 @@ class WP_Experience_API {
 		return apply_filters( 'wpxapi_context', $context, $data );
 	}
 
+	/**
+	 * creates timestamp
+	 *
+	 * @param unknown $data array of context info
+	 * @return TinCan\Timestamp object
+	 */
 	public static function create_timestamp( $data ) {
 		$timestamp = null;
 		if ( isset( $data['timestamp_raw'] ) ) {
@@ -503,10 +536,10 @@ class WP_Experience_API {
 	}
 
 	/**
- * Helper function that checks if PulsePress theme is the current theme
- *
- * @return B doolean
- */
+	 * Helper function that checks if PulsePress theme is the current theme
+	 *
+	 * @return B doolean
+	 */
 	public static function is_using_pulsepress_theme() {
 		$current_theme = wp_get_theme();
 		return $current_theme->get( 'Name' ) == 'PulsePress';
@@ -566,6 +599,18 @@ class WP_Experience_API {
 	}
 
 	/**
+	 * puts up a error notice when the queue is NOT empty. ONLY superadmins
+	 *
+	 * @return void
+	 */
+	public static function wpxapi_queue_is_not_emtpy_notice() {
+		$count = WP_Experience_API::wpxapi_queue_is_not_empty( true );
+		if ( is_super_admin() && $count > 0 ) {
+			$message = __( 'The WP Experience API Queue is now not empty.  Current number of items: ', 'wpxapi' );
+			echo '<div class="error notice is-dismissible"><p>' . $message . $count .'</p></div>';
+		}
+	}
+	/**
 	 * Displays message saying that related required plugins for Mozilla Open Badges Protocol not installed
 	 * @return [type] [description]
 	 */
@@ -595,6 +640,9 @@ class WP_Experience_API {
 		<?php
 	}
 
+	/**
+	 * Displays admin notice showing that the network level LRS is not stopped by the admin
+	 */
 	public static function stop_all_statements_notice() {
 		?>
 		<div class="update-nag">
@@ -697,18 +745,18 @@ class WP_Experience_API {
 	 *
 	 * @return boolean
 	 */
-	public static function wpxapi_run_queue() {
+	public static function wpxapi_run_the_queue() {
 		if ( WP_Experience_API::wpxapi_queue_is_not_empty() ) {
-			$past_retry_time_limit = false;
+
 			$count = WP_Experience_API::wpxapi_queue_is_not_empty( true );
 			$i = 0; //counter
 
 			//sanity check JUST to make sure it can/will end the loop
 			if ( 0 >= $count ) {
-				return;
+				return false;
 			}
 
-			while ( $i < $count && ! $past_retry_time_limit ) {
+			while ( $i < $count ) {
 				$i++;
 
 				//get queue object
@@ -716,12 +764,13 @@ class WP_Experience_API {
 
 				//sanity check that queue_obj is NOT empty
 				if ( empty( $queue_obj ) ) {
+					error_log( 'The queue is empty but is not supposed to be.' );
 					return false;
 				}
 
 				//if past max tries, then throw error message into log.
 				if ( $queue_obj->tries > WP_XAPI_MAX_SENDING_TRIES ) {
-					error_log('Max number of tries exceeded for the following statement: '.print_r( $queue_obj->statement, true ) );
+					error_log( 'Max number of tries exceeded for the following statement: '.print_r( $queue_obj->statement, true ) );
 					return false;
 				}
 
@@ -742,6 +791,7 @@ class WP_Experience_API {
 				}
 			}
 		}
+		return true;
 	}
 
 	/**

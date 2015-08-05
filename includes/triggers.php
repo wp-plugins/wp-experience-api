@@ -32,7 +32,7 @@ WP_Experience_API::register( 'earned_badges', array(
 
 		//figure out url for badge assertion.
 
-		$uid = current_achievement_id . '-' . get_post_time( 'U', true ) . '-' . current_user_id;
+		$uid = $current_achievement_id . '-' . get_post_time( 'U', true ) . '-' . $current_user_id;
 		$assertion_url = site_url() . '/' . get_option( 'json_api_base', 'api' ) . '/badge/assertion/?uid=' . $uid;
 		$issuer_url = site_url() . '/' . get_option( 'json_api_base', 'api' ) . '/badge/issuer/?uid=' . $uid;
 		$badge_url = site_url() . '/' . get_option( 'json_api_base', 'api' ) . '/badge/badge_class/?uid=' . $uid;
@@ -84,7 +84,8 @@ WP_Experience_API::register( 'earned_badges', array(
 							'@id' => $assertion_url,
 						)
 					)
-			)
+			),
+			'timestamp_raw' => date( 'c' )
 		);
 		return $statement;
 	}
@@ -143,7 +144,8 @@ WP_Experience_API::register( 'page_views', array(
 					'http://nextsoftwaresolutions.com/xapi/extensions/referer' => $_SERVER['HTTP_REFERER'],
 				),
 				'platform' => defined( 'CTLT_PLATFORM' ) ? constant( 'CTLT_PLATFORM' ) : 'unknown'
-			)
+			),
+			'timestamp_raw' => date( 'c' )
 		);
 
 		$user = get_current_user_id();
@@ -200,33 +202,34 @@ WP_Experience_API::register( 'give_comments', array(
 
 		$statement = null;
 		$statement = array(
-				'user' => get_current_user_id(),
-				'verb' => array(
-					'id' => 'http://adlnet.gov/expapi/verbs/commented',
-					'display' => array( 'en-US' => 'commented' )
-				),
-				'object' => array(
-					'id' => get_comment_link( $comment_id ),
-					'definition' => array(
-						'name' => array(
-							'en-US' => 'Comment: '.get_the_title( $comment->comment_post_ID ) . ' | ' . get_bloginfo( 'name' ),
-						),
-						'description' => array(
-							'en-US' => $description,
-						),
-						'type' => 'http://activitystrea.ms/schema/1.0/comment',
-					)
-				),
-				'context_raw' => array(
-					'extensions' => array(
-						'http://id.tincanapi.com/extension/browser-info' => array( 'user_agent' => $_SERVER['HTTP_USER_AGENT'] ),
-						'http://nextsoftwaresolutions.com/xapi/extensions/referer' => $_SERVER['HTTP_REFERER'],
+			'user' => get_current_user_id(),
+			'verb' => array(
+				'id' => 'http://adlnet.gov/expapi/verbs/commented',
+				'display' => array( 'en-US' => 'commented' )
+			),
+			'object' => array(
+				'id' => get_comment_link( $comment_id ),
+				'definition' => array(
+					'name' => array(
+						'en-US' => 'Comment: '.get_the_title( $comment->comment_post_ID ) . ' | ' . get_bloginfo( 'name' ),
 					),
-					'platform' => defined( 'CTLT_PLATFORM' ) ? constant( 'CTLT_PLATFORM' ) : 'unknown',
-				),
-				'result_raw' => array(
-					'response' => $comment->comment_content,
+					'description' => array(
+						'en-US' => $description,
+					),
+					'type' => 'http://activitystrea.ms/schema/1.0/comment',
 				)
+			),
+			'context_raw' => array(
+				'extensions' => array(
+					'http://id.tincanapi.com/extension/browser-info' => array( 'user_agent' => $_SERVER['HTTP_USER_AGENT'] ),
+					'http://nextsoftwaresolutions.com/xapi/extensions/referer' => $_SERVER['HTTP_REFERER'],
+				),
+				'platform' => defined( 'CTLT_PLATFORM' ) ? constant( 'CTLT_PLATFORM' ) : 'unknown',
+			),
+			'result_raw' => array(
+				'response' => $comment->comment_content,
+			),
+			'timestamp_raw' => date( 'c' )
 		);
 
 		return $statement;
@@ -341,6 +344,7 @@ WP_Experience_API::register( 'pulse_press_voting', array(
 				),
 				'platform' => defined( 'CTLT_PLATFORM' ) ? constant( 'CTLT_PLATFORM' ) : 'unknown',
 			),
+			'timestamp_raw' => date( 'c' )
 		);
 
 		return $statement;
@@ -356,16 +360,16 @@ WP_Experience_API::register( 'transition_post', array(
 	'process' => function( $hook, $args ) {  //args in this case should be ($new_status, $old_status, $post)
 		global $post;
 
-		$curent_post = null;
+		$current_post = null;
 		$switched_post = false; //so we can keep track if we switched posts
 		//put verb here cause we have to account for multiple possible verbs (trashed/authored for now)
 		$verb = array( 'id' => 'http://activitystrea.ms/schema/1.0/author', 'display' => array( 'en-US' => 'authored' ) );
 
 		//switch to post passed in via args vs global one as it's old and we are updating posts
 		if ( isset( $args[2] ) && ! empty( $args[2] ) && $args[2] instanceof WP_Post ) {
-			$curent_post = absint( $args[2] );
+			$current_post =  $args[2];
 		} else {
-			$curent_post = $post;
+			$current_post = $post;
 		}
 
 		//check site level settings for what to watch 3: nothing, 2: only to published, 1: to published and deleted
@@ -448,30 +452,31 @@ WP_Experience_API::register( 'transition_post', array(
 
 		$statement = null;
 		$statement = array(
-				'user' => get_current_user_id(),
-				'verb' => array(
-					'id' => $verb['id'],
-					'display' => $verb['display'],
-				),
-				'object' => array(
-					'id' => get_permalink( $current_post->ID ),
-					'definition' => array(
-						'name' => array(
-							'en-US' => (string) $current_post->post_title . ' | ' . get_bloginfo( 'name' ),
-						),
-						'type' => 'http://activitystrea.ms/schema/1.0/page',
-					)
-				),
-				'context_raw' => array(
-					'extensions' => array(
-						'http://id.tincanapi.com/extension/browser-info' => array( 'user_agent' => $_SERVER['HTTP_USER_AGENT'] ),
-						'http://nextsoftwaresolutions.com/xapi/extensions/referer' => $_SERVER['HTTP_REFERER'],
+			'user' => get_current_user_id(),
+			'verb' => array(
+				'id' => $verb['id'],
+				'display' => $verb['display'],
+			),
+			'object' => array(
+				'id' => get_permalink( $current_post->ID ),
+				'definition' => array(
+					'name' => array(
+						'en-US' => (string) $current_post->post_title . ' | ' . get_bloginfo( 'name' ),
 					),
-					'platform' => defined( 'CTLT_PLATFORM' ) ? constant( 'CTLT_PLATFORM' ) : 'unknown'
-				),
-				'result_raw' => array(
-					'response' => $current_post->post_content,
+					'type' => 'http://activitystrea.ms/schema/1.0/page',
 				)
+			),
+			'context_raw' => array(
+				'extensions' => array(
+					'http://id.tincanapi.com/extension/browser-info' => array( 'user_agent' => $_SERVER['HTTP_USER_AGENT'] ),
+					'http://nextsoftwaresolutions.com/xapi/extensions/referer' => $_SERVER['HTTP_REFERER'],
+				),
+				'platform' => defined( 'CTLT_PLATFORM' ) ? constant( 'CTLT_PLATFORM' ) : 'unknown'
+			),
+			'result_raw' => array(
+				'response' => $current_post->post_content,
+			),
+			'timestamp_raw' => date( 'c' )
 		);
 
 		//now get description and insert if there is something
@@ -553,4 +558,3 @@ ExperienceAPI::register('test_attachment', array(
 	}
 ));
 */
-
